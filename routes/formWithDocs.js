@@ -151,7 +151,7 @@ router.post("/forms-with-docs", upload.array("documents", 10), async (req, res) 
       const uploadRes = await imagekit.upload({
         file: uploadBuffer,
         fileName: uploadName,
-        folder: "/mutakegirlshostel/docs",
+        folder: "/vrundahostel/docs",
         useUniqueFileName: true,
       });
 
