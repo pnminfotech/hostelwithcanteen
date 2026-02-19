@@ -333,27 +333,23 @@ router.put("/:roomId/bed/:bedNo", async (req, res) => {
 });
 
 // ✅ Delete bed by roomId
-router.delete("/:roomNo/bed/:bedNo", async (req, res) => {
-  const { roomNo, bedNo } = req.params;
+router.delete("/:roomId/bed/:bedNo", async (req, res) => {
+  const { roomId, bedNo } = req.params;
 
   try {
-    const result = await Room.updateOne(
-      { roomNo: String(roomNo) },
-      {
-        $pull: {
-          beds: { bedNo: String(bedNo) } // if bedNo stored as string
-          // beds: { bedNo: Number(bedNo) } // if bedNo stored as number
-        },
-      }
+    const room = await Room.findById(roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
+
+    const before = room.beds.length;
+    room.beds = room.beds.filter(
+      (b) => String(b.bedNo).trim().toLowerCase() !== String(bedNo).trim().toLowerCase()
     );
 
-    if (result.matchedCount === 0)
-      return res.status(404).json({ message: "Room not found" });
-
-    if (result.modifiedCount === 0)
+    if (room.beds.length === before) {
       return res.status(404).json({ message: "Bed not found" });
+    }
 
-    const room = await Room.findOne({ roomNo: String(roomNo) });
+    await room.save();
     return res.json({ message: "Bed deleted successfully", room });
   } catch (err) {
     return res.status(500).json({ message: "Internal server error", error: err.message });

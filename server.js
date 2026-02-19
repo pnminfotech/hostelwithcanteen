@@ -27,6 +27,7 @@ const adminNotificationsRouter = require("./routes/adminattendenceNotifications"
 const adminLeaveRoutes = require("./routes/adminLeaveRoutes");
 const tenantDocsRoutes = require("./routes/tenantDocs");
 const invitesRouter = require("./routes/invites");
+const holidayRoutes = require("./routes/holidayRoutes");
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use("/api/tenant", tenantRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/invites", invitesRouter);
 app.use("/api/tenant/leaves", leaveRoutes);
+app.use("/api/tenant-holidays", holidayRoutes);
 
 app.use("/api/staff-expenses", require("./routes/staffExpenseRoutes"));
 app.use("/api", require("./routes/notifications"));

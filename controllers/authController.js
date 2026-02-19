@@ -1,30 +1,52 @@
 const User = require('../models/userModel');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 
 const SECRET_KEY = 'your-secret-key'; // Use a secure key
 
+const isDbConnected = () => mongoose.connection.readyState === 1;
+
 // Register user
 const registerUser = async (req, res) => {
-    try {
-      const { username, email, password } = req.body;
-  
-      // Check if user exists
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ message: 'User already exists' });
-      }
-  
-      // Create new user
-      const newUser = new User({ username, email, password });
-      await newUser.save();
-  
-      res.status(201).json({ success: true });
-    } catch (error) {
-      console.error(error); // Log the error
-      res.status(500).json({ message: 'Server error' }); // Handle server errors
+  try {
+    if (!isDbConnected()) {
+      return res.status(503).json({ message: "Database unavailable. Please check MongoDB connection." });
     }
-  };
+
+    const username = String(req.body?.username || req.body?.name || "").trim();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+
+    if (!username || !email || !password) {
+      return res.status(400).json({ message: "username, email and password are required" });
+    }
+
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ message: "User already exists" });
+    }
+
+    // Create new user
+    const newUser = new User({ username, email, password });
+    await newUser.save();
+
+    return res.status(201).json({ success: true });
+  } catch (error) {
+    console.error("registerUser error:", error);
+
+    if (error?.code === 11000) {
+      return res.status(409).json({ message: "User already exists" });
+    }
+
+    if (error?.name === "ValidationError") {
+      return res.status(400).json({ message: error.message });
+    }
+
+    return res.status(500).json({ message: "Server error" });
+  }
+};
   
   
   const getUserNAme = async (req, res)=>{
@@ -44,21 +66,34 @@ const registerUser = async (req, res) => {
 
 // Login user
 const loginUser = async (req, res) => {
+  try {
+    if (!isDbConnected()) {
+      return res.status(503).json({ message: "Database unavailable. Please check MongoDB connection." });
+    }
+
     const { email, password } = req.body;
-  
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' }); // Send JSON response
     }
-  
+
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(400).json({ message: 'Invalid credentials' }); // Send JSON response
     }
-  
+
     const token = jwt.sign({ userId: user._id, username: user.username }, SECRET_KEY, { expiresIn: '1h' });
     res.json({ token }); // Send the token as JSON
-  };
+  } catch (error) {
+    console.error("loginUser error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
   
 
 // Protected route to get user profile
