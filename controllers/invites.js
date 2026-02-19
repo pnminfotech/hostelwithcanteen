@@ -14,7 +14,7 @@
 // //   const origin =
 // //     req.get("X-Origin") ||
 // //     req.get("Origin") ||
-// //     " http://localhost:8000";
+// //     " https://vrunda-hostel.onrender.com";
 
 // //   const url = new URL("/sismarketing/tenant-intake", origin);
 
@@ -181,7 +181,7 @@
 //     const origin =
 //       req.get("X-Origin") ||
 //       req.get("Origin") ||
-//       " http://localhost:8000";
+//       " https://vrunda-hostel.onrender.com";
 
 //     // ✅ make sure this path matches your React route
 //     const url = new URL("/sismarketing/tenant-intake", origin);
@@ -377,7 +377,7 @@ exports.createInvite = async (req, res) => {
     const origin =
       req.get("X-Origin") ||
       req.get("Origin") ||
-      " http://localhost:8000";
+      " https://vrunda-hostel.onrender.com";
 
     const url = new URL("/vrundahostel/tenant-intake", origin);
     url.searchParams.set("tenant", "true");
