@@ -103,6 +103,8 @@ const formSchema = new mongoose.Schema(
     // relativeAddress2: { type: String },
 
     // ✅ relative contact triplets (relation + name + phone)
+    tenantParents: { type: String, default: "" },
+
     relative1Relation: {
       type: String,
       enum: ["Self", "Sister", "Brother", "Father", "Husband", "Mother"],

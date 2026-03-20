@@ -45,6 +45,7 @@ const formSchema = new mongoose.Schema(
     relativeAddress: { type: String },
 
     phoneNo: { type: Number, required: true },
+    tenantParents: { type: String, default: "" },
 
     // relative triplets
     relative1Relation: {

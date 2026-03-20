@@ -497,6 +497,7 @@ const updateFormById = async (req, res) => {
     const allowed = [
       "name","phoneNo","address","joiningDate","dob","relativeAddress1",
       "companyAddress","dateOfJoiningCollege","rentAmount","depositAmount",
+      "tenantParents",
       "relative1Relation","relative1Name","relative1Phone",
       "relative2Relation","relative2Name","relative2Phone",
       "documents","status","source",

@@ -65,6 +65,7 @@ const router = express.Router();
 const PaymentNotification = require("../models/PaymentNotification");
 const Payment = require("../models/Payment");
 const Form = require("../models/formModels"); // your tenant collection ("Form")
+const { runRentDueReminderTick } = require("../jobs/rentDueReminderJob");
 
 // --- helpers ---
 /** Convert (year, month 1..12) -> Date at first of that month. Falls back to "now". */
@@ -305,6 +306,16 @@ router.post('/bootstrap-notifs', async (req, res) => {
   } catch (e) {
     console.error('bootstrap-notifs error:', e);
     res.status(500).json({ message: 'bootstrap-notifs failed', error: String(e) });
+  }
+});
+
+// Manual trigger for 2-days-before rent due reminders
+router.post("/send-due-reminders", async (_req, res) => {
+  try {
+    const result = await runRentDueReminderTick();
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: "Failed to process due reminders", error: err.message });
   }
 });
 

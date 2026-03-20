@@ -28,6 +28,9 @@ const adminLeaveRoutes = require("./routes/adminLeaveRoutes");
 const tenantDocsRoutes = require("./routes/tenantDocs");
 const invitesRouter = require("./routes/invites");
 const holidayRoutes = require("./routes/holidayRoutes");
+const messageStatsRoutes = require("./routes/messageStats");
+const canteenExpenseRoutes = require("./routes/canteenExpenseRoutes");
+const { startRentDueReminderJob } = require("./jobs/rentDueReminderJob");
 
 const app = express();
 
@@ -71,8 +74,10 @@ app.use("/api", require("./routes/notifications"));
 app.use("/api/admin", adminLeaveRoutes);
 app.use("/api", require("./routes/tenantAttendance"));
 app.use("/api/admin", adminNotificationsRouter);
-
+app.use("/api", messageStatsRoutes);
+app.use("/api/canteen-expenses", canteenExpenseRoutes);
 connectDB();
+startRentDueReminderJob();
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {

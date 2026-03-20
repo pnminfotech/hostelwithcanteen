@@ -1,10 +1,30 @@
 const express = require("express");
 const Holiday = require("../models/Holiday");
 const Form = require("../models/formModels");
+const MessageStat = require("../models/MessageStat");
+const MessageEvent = require("../models/MessageEvent");
 
 const router = express.Router();
 
 const toISODate = (v) => new Date(v).toISOString().slice(0, 10);
+
+function normalizeIndianPhone(v) {
+  const digits = String(v || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  if (digits.length >= 11 && digits.startsWith("0")) return `+91${digits.slice(1, 11)}`;
+  return digits.startsWith("+") ? digits : `+${digits}`;
+}
+
+function normalizeMsg91Mobile(v) {
+  const digits = String(v || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91")) return digits;
+  if (digits.length >= 11 && digits.startsWith("0")) return `91${digits.slice(1, 11)}`;
+  return digits;
+}
 
 const calcTotalDays = (fromDate, toDate) => {
   const start = new Date(fromDate);
@@ -37,13 +57,26 @@ async function autoReturnExpiredHolidays() {
   );
 }
 
-const resolveParentMobile = (tenant) => {
-  return String(
-    tenant?.relative1Phone ||
-      tenant?.relative2Phone ||
-      tenant?.phoneNo ||
+const resolveParentMobile = (tenant) =>
+  String(
+    tenant?.tenantParents ||
+      tenant?.tenantParentPhone ||
+      tenant?.parentMobile ||
+      tenant?.parentPhone ||
       ""
   ).trim();
+
+const resolveHolidayRecipients = (tenant) => {
+  const parentMobile = resolveParentMobile(tenant);
+
+  const recipients = [];
+  const parentNorm = normalizeIndianPhone(parentMobile);
+  if (parentNorm) recipients.push(parentNorm);
+
+  return {
+    parentMobile: parentNorm || "",
+    recipients,
+  };
 };
 
 async function sendViaTwilio({ to, body }) {
@@ -72,9 +105,60 @@ async function sendViaTwilio({ to, body }) {
 
   if (!res.ok) {
     const txt = await res.text();
-    return { status: "failed", error: txt || "Twilio send failed" };
+    return { status: "failed", error: txt || "Twilio send failed", provider: "twilio", to };
   }
-  return { status: "sent", error: "" };
+  return { status: "sent", error: "", provider: "twilio", to };
+}
+
+async function sendViaMsg91Flow({ phoneNo, flowId, vars }) {
+  const authkey = process.env.MSG91_AUTHKEY;
+  const country = String(process.env.MSG91_COUNTRY || "91").trim();
+  const sender = process.env.MSG91_SENDER || undefined;
+
+  if (!authkey || !flowId) {
+    return { status: "skipped", error: "MSG91 env missing (AUTHKEY/FLOW_ID)", provider: "msg91", to: phoneNo };
+  }
+
+  const mobile = normalizeMsg91Mobile(phoneNo);
+  if (!mobile) return { status: "skipped", error: "recipient mobile not found", provider: "msg91", to: phoneNo };
+
+  const payload = {
+    flow_id: flowId,
+    mobiles: mobile.startsWith(country) ? mobile : `${country}${mobile}`,
+    ...(vars || {}),
+  };
+  if (sender) payload.sender = sender;
+
+  try {
+    const resp = await fetch("https://control.msg91.com/api/v5/flow/", {
+      method: "POST",
+      headers: {
+        authkey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const txt = await resp.text();
+    if (!resp.ok) {
+      return {
+        status: "failed",
+        error: txt || "MSG91 flow send failed",
+        provider: "msg91",
+        to: payload.mobiles,
+        meta: { httpStatus: resp.status, flowId },
+      };
+    }
+    return {
+      status: "sent",
+      error: "",
+      provider: "msg91",
+      to: payload.mobiles,
+      meta: { httpStatus: resp.status, flowId },
+    };
+  } catch (err) {
+    return { status: "failed", error: err.message || "MSG91 flow send failed", provider: "msg91", to: payload.mobiles };
+  }
 }
 
 async function sendViaWebhook({ to, body }) {
@@ -93,13 +177,49 @@ async function sendViaWebhook({ to, body }) {
 
   if (!res.ok) {
     const txt = await res.text();
-    return { status: "failed", error: txt || "Webhook send failed" };
+    return { status: "failed", error: txt || "Webhook send failed", provider: "webhook", to };
   }
-  return { status: "sent", error: "" };
+  return { status: "sent", error: "", provider: "webhook", to };
 }
 
-async function sendHolidaySMS({ parentMobile, tenantName, fromDate, toDate }) {
-  if (!parentMobile) return { status: "skipped", error: "Parent mobile not found" };
+async function bumpMessageStat(key, result) {
+  try {
+    const status = String(result?.status || "unknown").toLowerCase();
+    const inc = { total: 1 };
+    if (status === "sent") inc.sent = 1;
+    else if (status === "failed") inc.failed = 1;
+    else if (status === "skipped") inc.skipped = 1;
+
+    await MessageStat.findOneAndUpdate(
+      { key },
+      {
+        $inc: inc,
+        $set: {
+          lastStatus: status,
+          lastError: String(result?.error || ""),
+          lastAt: new Date(),
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    await MessageEvent.create({
+      key,
+      status: ["sent", "failed", "skipped"].includes(status) ? status : "unknown",
+      provider: String(result?.provider || "unknown"),
+      to: String(result?.to || ""),
+      error: String(result?.error || ""),
+      meta: result?.meta || {},
+    });
+  } catch (err) {
+    console.error("[message-stats] holiday update failed:", err.message || err);
+  }
+}
+
+async function sendHolidayStartSMS({ recipients, tenantName, fromDate, toDate }) {
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return { status: "skipped", error: "No recipients found", results: [] };
+  }
 
   const message = [
     "Dear Parent,",
@@ -108,19 +228,112 @@ async function sendHolidaySMS({ parentMobile, tenantName, fromDate, toDate }) {
     "",
     "- Hostel Management",
   ].join("\n");
+  const fromTxt = toISODate(fromDate);
+  const toTxt = toISODate(toDate);
 
-  try {
-    const twilioRes = await sendViaTwilio({ to: parentMobile, body: message });
-    if (twilioRes.status === "sent") return twilioRes;
-    if (twilioRes.status === "failed") return twilioRes;
-
-    const webhookRes = await sendViaWebhook({ to: parentMobile, body: message });
-    if (webhookRes.status === "sent" || webhookRes.status === "failed") return webhookRes;
-
-    return twilioRes;
-  } catch (err) {
-    return { status: "failed", error: err.message || "SMS send failed" };
+  const results = [];
+  for (const to of recipients) {
+    const m91 = await sendViaMsg91Flow({
+      phoneNo: to,
+      flowId: process.env.MSG91_HOLIDAY_FLOW_ID || process.env.MSG91_ADMISSION_FLOW_ID,
+      vars: {
+        NAME: String(tenantName || "Student"),
+        Date: fromTxt,
+        Date1: toTxt,
+        FROM_DATE: fromTxt,
+        TO_DATE: toTxt,
+        FROM: fromTxt,
+        TO: toTxt,
+        DATE_FROM: fromTxt,
+        DATE_TO: toTxt,
+        START_DATE: fromTxt,
+        END_DATE: toTxt,
+        HOSTEL: String(process.env.HOSTEL_NAME || "Vrunda Hostel"),
+        name: String(tenantName || "Student"),
+        from_date: fromTxt,
+        to_date: toTxt,
+        from: fromTxt,
+        to: toTxt,
+        date_from: fromTxt,
+        date_to: toTxt,
+        start_date: fromTxt,
+        end_date: toTxt,
+        hostel: String(process.env.HOSTEL_NAME || "Vrunda Hostel"),
+      },
+    });
+    let finalRes = m91;
+    if (m91.status === "skipped") {
+      const twilioRes = await sendViaTwilio({ to, body: message });
+      finalRes = twilioRes;
+      if (twilioRes.status === "skipped") {
+        finalRes = await sendViaWebhook({ to, body: message });
+        if (finalRes.status === "skipped") finalRes = m91;
+      }
+    }
+    results.push({ to, ...finalRes });
   }
+
+  const hasSent = results.some((r) => r.status === "sent");
+  const hasFailed = results.some((r) => r.status === "failed");
+  return {
+    status: hasSent ? "sent" : hasFailed ? "failed" : "skipped",
+    error: results.filter((r) => r.status !== "sent").map((r) => `${r.to}: ${r.error || r.status}`).join(" | "),
+    results,
+  };
+}
+
+async function sendHolidayReturnSMS({ recipients, tenantName, returnDate }) {
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return { status: "skipped", error: "No recipients found", results: [] };
+  }
+  const dateTxt = toISODate(returnDate || new Date());
+
+  const message = [
+    "Dear Parent,",
+    "",
+    `Your child ${tenantName} has arrived to the hostel on ${dateTxt}.`,
+    "",
+    "- Hostel Management",
+  ].join("\n");
+
+  const results = [];
+  for (const to of recipients) {
+    const m91 = await sendViaMsg91Flow({
+      phoneNo: to,
+      flowId: process.env.MSG91_HOLIDAY_RETURN_FLOW_ID || process.env.MSG91_HOLIDAY_FLOW_ID || process.env.MSG91_ADMISSION_FLOW_ID,
+      vars: {
+        NAME: String(tenantName || "Student"),
+        Date: dateTxt,
+        STATUS: "returned",
+        DATE: dateTxt,
+        ARRIVAL_DATE: dateTxt,
+        HOSTEL: String(process.env.HOSTEL_NAME || "Vrunda Hostel"),
+        name: String(tenantName || "Student"),
+        date: dateTxt,
+        arrival_date: dateTxt,
+        status: "returned",
+        hostel: String(process.env.HOSTEL_NAME || "Vrunda Hostel"),
+      },
+    });
+    let finalRes = m91;
+    if (m91.status === "skipped") {
+      const twilioRes = await sendViaTwilio({ to, body: message });
+      finalRes = twilioRes;
+      if (twilioRes.status === "skipped") {
+        finalRes = await sendViaWebhook({ to, body: message });
+        if (finalRes.status === "skipped") finalRes = m91;
+      }
+    }
+    results.push({ to, ...finalRes });
+  }
+
+  const hasSent = results.some((r) => r.status === "sent");
+  const hasFailed = results.some((r) => r.status === "failed");
+  return {
+    status: hasSent ? "sent" : hasFailed ? "failed" : "skipped",
+    error: results.filter((r) => r.status !== "sent").map((r) => `${r.to}: ${r.error || r.status}`).join(" | "),
+    results,
+  };
 }
 
 router.get("/", async (_req, res) => {
@@ -151,13 +364,18 @@ router.post("/", async (req, res) => {
     if (!tenant) return res.status(404).json({ message: "Tenant not found" });
 
     const totalDays = calcTotalDays(from, to);
-    const parentMobile = resolveParentMobile(tenant);
-    const sms = await sendHolidaySMS({
-      parentMobile,
+    const { parentMobile, recipients } = resolveHolidayRecipients(tenant);
+    const sms = await sendHolidayStartSMS({
+      recipients,
       tenantName: tenant.name,
       fromDate: from,
       toDate: to,
     });
+    if (Array.isArray(sms?.results) && sms.results.length) {
+      for (const r of sms.results) await bumpMessageStat("holiday_start_sms", r);
+    } else {
+      await bumpMessageStat("holiday_start_sms", sms);
+    }
 
     const doc = await Holiday.create({
       tenantId: tenant._id,
@@ -210,7 +428,25 @@ router.put("/:id", async (req, res) => {
     }
 
     const updated = await Holiday.findByIdAndUpdate(req.params.id, { $set: patch }, { new: true });
-    res.json({ message: "Holiday updated", holiday: updated });
+
+    let returnSms = null;
+    const becameReturned = current.status !== "returned" && updated?.status === "returned";
+    if (becameReturned) {
+      const tenant = await Form.findById(current.tenantId).lean();
+      const { recipients } = resolveHolidayRecipients(tenant || {});
+      returnSms = await sendHolidayReturnSMS({
+        recipients,
+        tenantName: updated.tenantName || tenant?.name || "Student",
+        returnDate: updated.returnedAt || new Date(),
+      });
+      if (Array.isArray(returnSms?.results) && returnSms.results.length) {
+        for (const r of returnSms.results) await bumpMessageStat("holiday_return_sms", r);
+      } else {
+        await bumpMessageStat("holiday_return_sms", returnSms);
+      }
+    }
+
+    res.json({ message: "Holiday updated", holiday: updated, returnSms });
   } catch (err) {
     res.status(500).json({ message: "Failed to update holiday", error: err.message });
   }
@@ -228,13 +464,32 @@ router.delete("/:id", async (req, res) => {
 
 router.patch("/:id/return", async (req, res) => {
   try {
+    const existing = await Holiday.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Holiday not found" });
+
     const updated = await Holiday.findByIdAndUpdate(
       req.params.id,
       { $set: { status: "returned", returnedAt: new Date() } },
       { new: true }
     );
-    if (!updated) return res.status(404).json({ message: "Holiday not found" });
-    res.json({ message: "Tenant marked as returned", holiday: updated });
+
+    let returnSms = null;
+    if (existing.status !== "returned") {
+      const tenant = await Form.findById(updated.tenantId).lean();
+      const { recipients } = resolveHolidayRecipients(tenant || {});
+      returnSms = await sendHolidayReturnSMS({
+        recipients,
+        tenantName: updated.tenantName || tenant?.name || "Student",
+        returnDate: updated.returnedAt || new Date(),
+      });
+      if (Array.isArray(returnSms?.results) && returnSms.results.length) {
+        for (const r of returnSms.results) await bumpMessageStat("holiday_return_sms", r);
+      } else {
+        await bumpMessageStat("holiday_return_sms", returnSms);
+      }
+    }
+
+    res.json({ message: "Tenant marked as returned", holiday: updated, returnSms });
   } catch (err) {
     res.status(500).json({ message: "Failed to mark returned", error: err.message });
   }
