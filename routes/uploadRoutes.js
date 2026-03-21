@@ -83,7 +83,7 @@ router.post("/docs", upload.array("documents", 10), async (req, res) => {
       const ik = await imagekit.upload({
         file: uploadBuffer,
         fileName: uploadName,
-        folder: "/vrundahostel/docs",
+        folder: "/hostelwithcanteen/docs",
         useUniqueFileName: true,
       });
 

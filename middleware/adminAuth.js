@@ -1,6 +1,7 @@
 // payment-Backend/middleware/adminAuth.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel'); // you already have this model
+const verifyUserToken = require("../utils/verifyUserToken");
 
 module.exports = async function adminAuth(req, res, next) {
   try {
@@ -10,10 +11,10 @@ module.exports = async function adminAuth(req, res, next) {
       return res.status(401).json({ message: 'No token provided' });
     }
 
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
+    const payload = verifyUserToken(token);
 
     // Adjust this if your token stores a different key
-    const userId = payload.id || payload._id;
+    const userId = payload.userId || payload.id || payload._id || payload.sub;
     const user = await User.findById(userId);
     if (!user) return res.status(401).json({ message: 'User not found' });
 
