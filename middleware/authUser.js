@@ -1,5 +1,6 @@
 const User = require("../models/userModel");
 const verifyUserToken = require("../utils/verifyUserToken");
+const getEffectiveUserRole = require("../utils/getEffectiveUserRole");
 
 module.exports = async function authUser(req, res, next) {
   try {
@@ -24,6 +25,7 @@ module.exports = async function authUser(req, res, next) {
 
     req.user = user;
     req.auth = payload;
+    req.userRole = getEffectiveUserRole(user, payload);
     next();
   } catch (error) {
     return res.status(401).json({ message: "Invalid/expired token" });

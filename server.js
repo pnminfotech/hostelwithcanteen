@@ -30,6 +30,7 @@ const invitesRouter = require("./routes/invites");
 const holidayRoutes = require("./routes/holidayRoutes");
 const messageStatsRoutes = require("./routes/messageStats");
 const canteenExpenseRoutes = require("./routes/canteenExpenseRoutes");
+const mealAttendanceRoutes = require("./routes/mealAttendanceRoutes");
 const { startRentDueReminderJob } = require("./jobs/rentDueReminderJob");
 
 const app = express();
@@ -76,6 +77,7 @@ app.use("/api", require("./routes/tenantAttendance"));
 app.use("/api/admin", adminNotificationsRouter);
 app.use("/api", messageStatsRoutes);
 app.use("/api/canteen-expenses", canteenExpenseRoutes);
+app.use("/api/meal-attendance", mealAttendanceRoutes);
 connectDB();
 startRentDueReminderJob();
 

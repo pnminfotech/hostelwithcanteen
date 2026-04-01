@@ -2,10 +2,13 @@ const User = require('../models/userModel');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
+const getEffectiveUserRole = require("../utils/getEffectiveUserRole");
 
 const SECRET_KEY = 'your-secret-key'; // Use a secure key
 
 const isDbConnected = () => mongoose.connection.readyState === 1;
+const getLandingPathForRole = (role) =>
+  role === "canteen_admin" ? "/canteen-management" : "/maindashboard";
 
 // Register user
 const registerUser = async (req, res) => {
@@ -17,6 +20,7 @@ const registerUser = async (req, res) => {
     const username = String(req.body?.username || req.body?.name || "").trim();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
+    const role = getEffectiveUserRole(req.body?.role);
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: "username, email and password are required" });
@@ -29,10 +33,14 @@ const registerUser = async (req, res) => {
     }
 
     // Create new user
-    const newUser = new User({ username, email, password });
+    const newUser = new User({ username, email, password, role });
     await newUser.save();
 
-    return res.status(201).json({ success: true });
+    return res.status(201).json({
+      success: true,
+      role,
+      redirectPath: getLandingPathForRole(role),
+    });
   } catch (error) {
     console.error("registerUser error:", error);
 
@@ -58,7 +66,10 @@ const registerUser = async (req, res) => {
       const user = await User.findById(decoded.userId);
       if (!user) return res.status(404).json({ message: "User not found" });
 
-      res.json({ username: user.username });
+      res.json({
+        username: user.username,
+        role: getEffectiveUserRole(user, decoded),
+      });
   } catch (error) {
       res.status(500).json({ message: "Server error" });
   }
@@ -87,8 +98,18 @@ const loginUser = async (req, res) => {
       return res.status(400).json({ message: 'Invalid credentials' }); // Send JSON response
     }
 
-    const token = jwt.sign({ userId: user._id, username: user.username }, SECRET_KEY, { expiresIn: '1h' });
-    res.json({ token }); // Send the token as JSON
+    const role = getEffectiveUserRole(user);
+    const token = jwt.sign(
+      { userId: user._id, username: user.username, role },
+      SECRET_KEY,
+      { expiresIn: '1h' }
+    );
+    res.json({
+      token,
+      role,
+      username: user.username,
+      redirectPath: getLandingPathForRole(role),
+    });
   } catch (error) {
     console.error("loginUser error:", error);
     return res.status(500).json({ message: "Server error" });
@@ -100,7 +121,16 @@ const loginUser = async (req, res) => {
 const getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-password');
-    res.json(user);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const role = getEffectiveUserRole(user, req.user);
+    res.json({
+      ...user.toObject(),
+      role,
+      redirectPath: getLandingPathForRole(role),
+    });
   } catch (err) {
     res.status(400).json({ message: 'Invalid token' });
   }
