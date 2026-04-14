@@ -2,6 +2,7 @@
 const mongoose = require("mongoose");
 const Form = require("../models/formModels");
 const Archive = require("../models/archiveSchema");
+const Room = require("../models/Room");
 const DuplicateForm = require("../models/DuplicateForm");
 const cron = require("node-cron");
 const Counter = require("../models/counterModel");
@@ -65,6 +66,92 @@ const getNextSrNo = async (req, res) => {
     console.error("Error getting next SrNo:", err);
     return res.status(500).json({ error: "Failed to get SrNo" });
   }
+};
+
+const normalizeKey = (value) => String(value ?? "").trim();
+
+const getOccupiedBedSet = async () => {
+  const activeForms = await Form.find({}, { roomNo: 1, bedNo: 1, leaveDate: 1 }).lean();
+
+  return new Set(
+    activeForms
+      .filter((form) => !form.leaveDate && normalizeKey(form.roomNo) && normalizeKey(form.bedNo))
+      .map((form) => `${normalizeKey(form.roomNo)}-${normalizeKey(form.bedNo)}`)
+  );
+};
+
+const findVacantBedInRoom = (room, occupiedBeds) => {
+  if (!room?.beds?.length) return null;
+
+  return (
+    room.beds.find((bed) => {
+      const bedNo = normalizeKey(bed.bedNo);
+      if (!bedNo) return false;
+      return !occupiedBeds.has(`${normalizeKey(room.roomNo)}-${bedNo}`);
+    }) || null
+  );
+};
+
+const resolveRestoredBed = async (archivedData) => {
+  const originalRoomNo = normalizeKey(archivedData.roomNo);
+  const originalBedNo = normalizeKey(archivedData.bedNo);
+
+  const payload = {
+    roomNo: archivedData.roomNo,
+    bedNo: archivedData.bedNo,
+    floorNo: archivedData.floorNo,
+    baseRent: archivedData.baseRent,
+    restoreNote: "",
+  };
+
+  if (!originalRoomNo || !originalBedNo) {
+    return payload;
+  }
+
+  const occupiedBeds = await getOccupiedBedSet();
+  const originalKey = `${originalRoomNo}-${originalBedNo}`;
+
+  const rooms = await Room.find({}, { roomNo: 1, floorNo: 1, beds: 1 })
+    .sort({ floorNo: 1, roomNo: 1 })
+    .lean();
+
+  const originalRoom = rooms.find((room) => normalizeKey(room.roomNo) === originalRoomNo);
+  const originalBed = originalRoom?.beds?.find((bed) => normalizeKey(bed.bedNo) === originalBedNo);
+
+  if (originalRoom && originalBed && !occupiedBeds.has(originalKey)) {
+    payload.roomNo = originalRoom.roomNo;
+    payload.bedNo = originalBed.bedNo;
+    payload.floorNo = originalRoom.floorNo ?? archivedData.floorNo;
+    payload.baseRent = originalBed.price ?? archivedData.baseRent;
+    return payload;
+  }
+
+  const sameRoomVacantBed = findVacantBedInRoom(originalRoom, occupiedBeds);
+
+  if (sameRoomVacantBed) {
+    payload.roomNo = originalRoom.roomNo;
+    payload.bedNo = sameRoomVacantBed.bedNo;
+    payload.floorNo = originalRoom.floorNo ?? archivedData.floorNo;
+    payload.baseRent = sameRoomVacantBed.price ?? archivedData.baseRent;
+    payload.restoreNote = `Original bed ${originalKey} is already occupied, so the tenant was restored to Room ${payload.roomNo} Bed ${payload.bedNo}.`;
+    return payload;
+  }
+
+  for (const room of rooms) {
+    const vacantBed = findVacantBedInRoom(room, occupiedBeds);
+    if (vacantBed) {
+      payload.roomNo = room.roomNo;
+      payload.bedNo = vacantBed.bedNo;
+      payload.floorNo = room.floorNo ?? archivedData.floorNo;
+      payload.baseRent = vacantBed.price ?? archivedData.baseRent;
+      payload.restoreNote = `Original bed ${originalKey} is already occupied, so the tenant was restored to Room ${payload.roomNo} Bed ${payload.bedNo}.`;
+      return payload;
+    }
+  }
+
+  const error = new Error("No vacant beds are available to restore this tenant.");
+  error.statusCode = 409;
+  throw error;
 };
 
 /* ============================================================================
@@ -406,6 +493,12 @@ const restoreForm = async (req, res) => {
     }
 
     const { leaveDate, ...restoredData } = archivedData.toObject();
+    const bedResolution = await resolveRestoredBed(restoredData);
+
+    restoredData.roomNo = bedResolution.roomNo;
+    restoredData.bedNo = bedResolution.bedNo;
+    restoredData.floorNo = bedResolution.floorNo;
+    restoredData.baseRent = bedResolution.baseRent;
 
     const restoredForm = new Form(restoredData);
     await restoredForm.save();
@@ -413,9 +506,17 @@ const restoreForm = async (req, res) => {
     await Archive.findByIdAndDelete(id);
     console.log("Archived Data Deleted:", id);
 
-    res.status(200).json(restoredForm);
+    const responsePayload = restoredForm.toObject();
+    if (bedResolution.restoreNote) {
+      responsePayload.restoreNote = bedResolution.restoreNote;
+    }
+
+    res.status(200).json(responsePayload);
   } catch (error) {
     console.error("Error restoring archived data:", error.message);
+    if (error.statusCode === 409) {
+      return res.status(409).json({ message: error.message });
+    }
     res.status(500).json({ message: "Error restoring archived data" });
   }
 };

@@ -4,6 +4,7 @@ const router = express.Router();
 
 // Models (used by a couple of inline routes)
 const Form = require("../models/formModels");
+const Room = require("../models/Room");
 
 // Controllers
 const {
@@ -81,8 +82,76 @@ router.put("/form/:id", updateForm);
 router.post("/cancel-leave", async (req, res) => {
   const { id } = req.body;
   try {
-    await Form.findByIdAndUpdate(id, { $unset: { leaveDate: "" } });
-    res.json({ success: true });
+    const tenant = await Form.findById(id).lean();
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: "Form not found" });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const isActiveLeave = (leaveDate) => {
+      if (!leaveDate) return false;
+      const d = new Date(leaveDate);
+      if (Number.isNaN(d.getTime())) return false;
+      d.setHours(0, 0, 0, 0);
+      return d >= today;
+    };
+
+    const normalize = (value) => String(value ?? "").trim();
+
+    const activeTenants = await Form.find(
+      { _id: { $ne: id } },
+      { roomNo: 1, bedNo: 1, leaveDate: 1 }
+    ).lean();
+
+    const occupiedBeds = new Set(
+      activeTenants
+        .filter((t) => normalize(t.roomNo) && normalize(t.bedNo) && (!t.leaveDate || isActiveLeave(t.leaveDate)))
+        .map((t) => `${normalize(t.roomNo)}-${normalize(t.bedNo)}`)
+    );
+
+    const originalRoomNo = normalize(tenant.roomNo);
+    const originalBedNo = normalize(tenant.bedNo);
+    const originalKey = `${originalRoomNo}-${originalBedNo}`;
+
+    const rooms = await Room.find({}, { roomNo: 1, floorNo: 1, category: 1, beds: 1 })
+      .sort({ floorNo: 1, roomNo: 1 })
+      .lean();
+
+    const availableBeds = [];
+    for (const room of rooms) {
+      for (const bed of room.beds || []) {
+        const key = `${normalize(room.roomNo)}-${normalize(bed.bedNo)}`;
+        if (!occupiedBeds.has(key)) {
+          availableBeds.push({
+            roomNo: room.roomNo,
+            bedNo: bed.bedNo,
+            floorNo: room.floorNo,
+            category: room.category || "",
+            price: bed.price ?? null,
+          });
+        }
+      }
+    }
+
+    const originalBedAvailable = !occupiedBeds.has(originalKey);
+
+    if (!originalRoomNo || !originalBedNo || originalBedAvailable) {
+      await Form.findByIdAndUpdate(id, { $unset: { leaveDate: "" } });
+      return res.json({
+        success: true,
+        message: "Leave canceled successfully.",
+        restoredBed: { roomNo: tenant.roomNo, bedNo: tenant.bedNo },
+      });
+    }
+
+    return res.status(409).json({
+      success: false,
+      message: `Room ${tenant.roomNo} / Bed ${tenant.bedNo} is already occupied.`,
+      originalBed: { roomNo: tenant.roomNo, bedNo: tenant.bedNo },
+      availableBeds,
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: "Error cancelling leave" });
   }
